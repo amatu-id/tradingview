@@ -53,6 +53,7 @@ function fire(a, price, extra, ts) {
   if (a.freq === 'bar' && a.lf && PN.tfFloor(a.lf, a.tf || '1') === bar) return;
   if (a.freq === 'min' && a.lf && now - a.lf < 60000) return;
   if ((a.freq === 'bar' || a.freq === 'min' || a.freq === 'close') && a.lf && now - a.lf < 5000) return;
+  const fk = U.load('pt.tradingview.fired', {}); if (fk[a.id] && Math.abs(now - fk[a.id]) < 4000) { if (a.freq === 'once') a.on = false; return; } fk[a.id] = now; for (const k in fk) if (Date.now() - fk[k] > 864e5) delete fk[k]; U.save('pt.tradingview.fired', fk);   // another tab already fired it
   a.lf = now; a.n = (a.n || 0) + 1; if (a.freq === 'once') a.on = false;
   const inf = F.info(a.sym);
   const msg = (a.msg || inf.ticker + ' ' + A.desc(a)).replace(/\{\{ticker\}\}/g, inf.ticker).replace(/\{\{exchange\}\}/g, inf.prefix).replace(/\{\{close\}\}|\{\{price\}\}/g, U.fmt(price, inf.prec)).replace(/\{\{interval\}\}/g, a.tf || '').replace(/\{\{time\}\}|\{\{timenow\}\}/g, new Date(now).toISOString()) + (extra ? ' (' + extra + ')' : '');
@@ -83,13 +84,14 @@ function fireS(a, s, msg) { const c = s.chart, n = c.bars.T.length - 1; a.sym = 
 /* candles closed while this page was away */
 async function catchUp() {
   for (const a of list.slice()) {
-    if (!a.on || (a.kind !== 'price' && a.kind !== 'draw') || /^pct/.test(a.cond)) continue; const from = a.chk || a.ct, now = Date.now(); if (now - from < 90000) continue;
+    if (!a.on || (a.kind !== 'price' && a.kind !== 'draw') || /^pct/.test(a.cond)) continue; const from = Math.max(a.chk || a.ct || 0, U.load('pt.tradingview.alchk', 0)), now = Date.now(); if (now - from < 90000) continue;
     const mins = (now - from) / 60000, tf = mins < 900 ? '1' : mins < 4500 ? '5' : '15';
-    try { const d = await F.fetchBars(a.sym, F.baseTf(a.sym.split(':')[0], tf), 0, Math.min(1000, Math.ceil((now - from) / PN.tfParse(tf).ms) + 2)); let prev = null; const dr = a.kind === 'draw' ? findDraw(a) : null; for (const k of d) { if (k[0] < from) { prev = k[4]; continue; } const lv = dr ? AC.DrawLayer.priceAt(dr, k[0]) : [a.v]; let hit = false; for (const v of lv) { const up = k[2] >= v && (prev === null ? k[1] : prev) < v, dn = k[3] <= v && (prev === null ? k[1] : prev) > v; if (a.cond === 'up' ? up : a.cond === 'dn' ? dn : a.cond === 'gt' ? k[2] > v : a.cond === 'lt' ? k[3] < v : up || dn) { hit = true; break; } } if (hit) { fire(a, k[4], null, k[0]); break; } prev = k[4]; } a.chk = now; } catch (e) { /* offline */ }
+    try { const d = await F.fetchBars(a.sym, F.baseTf(a.sym.split(':')[0], tf), 0, Math.min(1000, Math.ceil((now - from) / PN.tfParse(tf).ms) + 2)); let prev = null; const dr = a.kind === 'draw' ? findDraw(a) : null; for (const k of d) { if (k[0] < from) { prev = k[4]; continue; } const lv = dr ? AC.DrawLayer.priceAt(dr, k[0]) : [a.v]; let hit = false; for (const v of lv) { const up = k[2] >= v && (prev === null ? k[1] : prev) < v, dn = k[3] <= v && (prev === null ? k[1] : prev) > v; if (a.cond === 'up' ? up : a.cond === 'dn' ? dn : a.cond === 'gt' ? k[2] > v : a.cond === 'lt' ? k[3] < v : up || dn) { hit = true; break; } } if (hit) { fire(a, k[4], null, k[0]); break; } prev = k[4]; } } catch (e) { /* offline */ }
   }
-  U.save('tradingview.alerts', list);
+  U.save('pt.tradingview.alchk', Date.now());
 }
-setInterval(() => { const now = Date.now(); for (const a of list) if (a.on) a.chk = now; if (app) U.save('tradingview.alerts', list); }, 120000);
+/* when this device last watched prices (device only, so it never causes account sync traffic) */
+setInterval(() => { if (app && list.some(a => a.on)) U.save('pt.tradingview.alchk', Date.now()); }, 30000);
 /* bar close alerts */
 setInterval(() => { for (const a of list) if (a.on && a.wait) { const bar = PN.tfFloor(Date.now(), a.tf || '1'); if (a.wb === undefined) a.wb = bar; if (bar !== a.wb) { a.wait = false; a.wb = undefined; const q = F.quotes[a.sym]; if (q && (a.cond === 'dn' || a.cond === 'lt' ? q.last <= a.v : a.cond === 'up' || a.cond === 'gt' ? q.last >= a.v : true)) fire(a, q.last); } } }, 1000);
 })();
